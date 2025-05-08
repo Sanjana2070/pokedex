@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { Container, Row, Col, Spinner } from "react-bootstrap";
 import InfiniteScroll from "react-infinite-scroll-component";
 import { useParams } from "react-router-dom";
@@ -12,88 +12,91 @@ import api from "../services/api";
 import Colors from "../styles/Colors";
 import { SavePokemons, VerifyPokemons } from "../services/storage";
 
-let pokemonsOriginal = [];
 const perPage = 16;
 const limit = 898;
-let max = 0;
 
 function Home() {
   const { query } = useParams();
 
   const [loading, setLoading] = useState(true);
   const [pokemons, setPokemons] = useState([]);
+  const [max, setMax] = useState(0);
 
-  function HandlerResult(maximum, pokemons) {
-    max = maximum;
-    setPokemons(pokemons);
-  }
+  const pokemonsOriginal = useRef([]);
 
-  useEffect(() => {
-    setLoading(true);
+  const applyQueryFilter = useCallback((sourceList) => {
     if (query === undefined) {
-      HandlerResult(pokemonsOriginal.length, pokemonsOriginal.slice(0, perPage));
-      setLoading(false);
-      return;
+      setMax(sourceList.length);
+      setPokemons(sourceList.slice(0, perPage));
+    } else {
+      const filtered = sourceList.filter(
+        (item) =>
+          item.name.includes(query.toLowerCase()) || item.number.includes(query)
+      );
+      setMax(filtered.length);
+      setPokemons(filtered.slice(0, perPage));
     }
-
-    const filtered = pokemonsOriginal.filter((item) => {
-      return item.name.includes(query.toLowerCase()) || item.number.includes(query);
-    });
-
-    HandlerResult(filtered.length, filtered.slice(0, perPage));
-    setLoading(false);
   }, [query]);
+
+  const loadPokemonsFromAPI = useCallback(async () => {
+    try {
+      const pokeList = await api.get(`/pokemon?limit=${limit}`);
+      const all = await Promise.all(
+        pokeList.data.results.map(async (poke) => {
+          const pokeDetails = await api.get(`/pokemon/${poke.name}`);
+          return {
+            name: pokeDetails.data.name,
+            id: pokeDetails.data.id,
+            types: pokeDetails.data.types,
+            number: pokeDetails.data.id.toString().padStart(3, "0"),
+            image:
+              pokeDetails.data.sprites.versions["generation-v"]["black-white"].animated.front_default,
+          };
+        })
+      );
+
+      SavePokemons(all);
+      pokemonsOriginal.current = all;
+      applyQueryFilter(all);
+    } catch (error) {
+      console.error("Failed to fetch pokemons from API:", error);
+    }
+  }, [applyQueryFilter]);
 
   useEffect(() => {
-    setLoading(true);
-    const listLocal = VerifyPokemons();
-    if (listLocal == null) {
-      LoadPokemons();
-      return;
+    async function initialize() {
+      setLoading(true);
+
+      try {
+        const listLocal = VerifyPokemons();
+
+        if (listLocal == null) {
+          await loadPokemonsFromAPI();
+        } else {
+          pokemonsOriginal.current = listLocal;
+          applyQueryFilter(listLocal);
+        }
+      } catch (err) {
+        console.error("Error loading Pokémon data:", err);
+      }
+
+      setLoading(false);
     }
 
-    pokemonsOriginal = listLocal;
-    if (query !== undefined) {
-      const filtered = listLocal.filter(
-        (i) => i.name.includes(query.toLowerCase()) || i.number.includes(query)
-      );
-      HandlerResult(filtered.length, filtered.slice(0, perPage));
-    } else {
-      HandlerResult(listLocal.length, listLocal.slice(0, perPage));
-    }
-    setLoading(false);
-  }, [query]);
-
-  async function LoadPokemons() {
-    let pokeList = await api.get(`/pokemon?limit=${limit}`);
-    const all = [];
-    for (let i = 0; i < pokeList.data.results.length; i++) {
-      let pokeDetails = await api.get(`/pokemon/${pokeList.data.results[i].name}`);
-      const obj = {
-        name: pokeDetails.data.name,
-        id: pokeDetails.data.id,
-        types: pokeDetails.data.types,
-        number: pokeDetails.data.id.toString().padStart(3, "0"),
-        image:
-          pokeDetails.data.sprites.versions["generation-v"]["black-white"].animated.front_default,
-      };
-      all.push(obj);
-    }
-
-    SavePokemons(all);
-    pokemonsOriginal = all;
-    HandlerResult(all.length, all.slice(0, perPage));
-    setLoading(false);
-  }
+    initialize();
+  }, [query, applyQueryFilter, loadPokemonsFromAPI]);
 
   function LoadMore() {
     const limitCount = pokemons.length + perPage;
+    const source = pokemonsOriginal.current;
+
     if (query === undefined) {
-      setPokemons(pokemonsOriginal.slice(0, limitCount));
+      setPokemons(source.slice(0, limitCount));
     } else {
-      const filtered = pokemonsOriginal.filter((item) => {
-        return item.name.includes(query.toLowerCase()) || item.number.includes(query);
-      });
+      const filtered = source.filter(
+        (item) =>
+          item.name.includes(query.toLowerCase()) || item.number.includes(query)
+      );
       setPokemons(filtered.slice(0, limitCount));
     }
   }
@@ -139,8 +142,6 @@ function Home() {
                   <PokeCard name={item.name} id={item.id} types={item.types} click={true} />
                 </Col>
               ))}
-
-              {/* Empty cols to keep layout aligned if pokemons % 4 !== 0 */}
               {Array.from({ length: (4 - (pokemons.length % 4)) % 4 }).map((_, i) => (
                 <Col key={`empty-${i}`} xs={12} sm={6} lg={3} className="invisible" />
               ))}
